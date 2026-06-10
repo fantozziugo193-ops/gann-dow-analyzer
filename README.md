@@ -1,0 +1,1 @@
+# gann-dow-analyzer
