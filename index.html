@@ -19,10 +19,6 @@
 <div id="root"></div>
 <script type="text/babel">
 
-const AV_KEY = "RGHF7HXKG58GCB48";
-const ANTHROPIC_KEY = "YOUR_ANTHROPIC_KEY"; // lascia così, verrà gestito dal proxy
-
-/* ── Alpha Vantage proxy via Vercel API route ── */
 async function fetchStock(ticker) {
   const res = await fetch(`/api/stock?ticker=${ticker}`);
   if (!res.ok) throw new Error(`Errore: ${res.status}`);
@@ -31,7 +27,6 @@ async function fetchStock(ticker) {
   return json.data;
 }
 
-/* ── CSV parser ── */
 function parseCSV(text) {
   const lines = text.trim().split("\n").filter(Boolean);
   const first = lines[0].toLowerCase().split(/[,;\t]/);
@@ -45,7 +40,6 @@ function parseCSV(text) {
   }).filter(Boolean);
 }
 
-/* ── Dow Theory ── */
 function analyzeDow(data) {
   if (data.length < 20) return null;
   const closes=data.map(d=>d.close), highs=data.map(d=>d.high), lows=data.map(d=>d.low);
@@ -73,14 +67,13 @@ function analyzeDow(data) {
   };
 }
 
-/* ── Gann Analysis ── */
 function analyzeGann(data) {
   if (data.length<10) return null;
   const slice=data.slice(-60);
   const recentHigh=Math.max(...slice.map(d=>d.high)), recentLow=Math.min(...slice.map(d=>d.low));
   const range=recentHigh-recentLow;
   const gannLevels=[0.125,0.25,0.375,0.5,0.625,0.75,0.875].map((r,i)=>({
-    label:["1/8","2/8","3/8","4/8 — Equilibrio","5/8","6/8","7/8"][i],
+    label:["1/8","2/8","3/8","4/8 Equilibrio","5/8","6/8","7/8"][i],
     value:+(recentLow+range*r).toFixed(2),
   }));
   const current=data[data.length-1].close;
@@ -90,7 +83,33 @@ function analyzeGann(data) {
   return { recentHigh:+recentHigh.toFixed(2), recentLow:+recentLow.toFixed(2), range:+range.toFixed(2), gannLevels, nearestLevel, gann1x1, currentPrice:current };
 }
 
-/* ── Candlestick ── */
+function generatePrompt(ticker, dow, gann) {
+  return `Sei un analista tecnico esperto. Analizza i dati per ${ticker} e dai una raccomandazione CHIARA E OPERATIVA in italiano per un investitore retail principiante.
+
+DATI DOW: Trend Primario=${dow.primaryTrend}, MA20=${dow.ma20}, MA50=${dow.ma50||"N/D"}, Prezzo=${dow.currentPrice} (${dow.priceVsMa20}% vs MA20), Swing Highs=${dow.swingHighs.map(h=>h.value).join(",")}, Swing Lows=${dow.swingLows.map(l=>l.value).join(",")}
+DATI GANN: Max60gg=${gann.recentHigh}, Min60gg=${gann.recentLow}, Range=${gann.range}, Livello vicino=${gann.nearestLevel.label}=${gann.nearestLevel.value}, Angolo1x1=${gann.gann1x1}, Livelli=${gann.gannLevels.map(l=>l.value).join(",")}
+
+Rispondi ESATTAMENTE così:
+
+**🎯 DECISIONE: [COMPRA ORA / ASPETTA / NON COMPRARE]**
+Motivazione in una frase.
+
+**📅 QUANDO COMPRARE**
+Condizione precisa con prezzi numerici.
+
+**💰 PIANO OPERATIVO**
+- Entrata: [prezzo]
+- Stop Loss: [prezzo] — -X%
+- Target 1: [prezzo] — +X%
+- Target 2: [prezzo] — +X%
+- Risk/Reward: 1:X
+
+**⚠️ ATTENZIONE**
+Un rischio concreto.
+
+⚠ Analisi tecnica, non consulenza finanziaria.`;
+}
+
 function CandlestickChart({data, gannLevels, ma20}) {
   const ref = React.useRef(null);
   React.useEffect(()=>{
@@ -141,42 +160,6 @@ function CandlestickChart({data, gannLevels, ma20}) {
   return <canvas ref={ref} style={{width:"100%",height:"280px"}}/>;
 }
 
-/* ── AI Signal ── */
-async function getAISignal(ticker, dow, gann) {
-  const prompt = `Sei un analista tecnico esperto. Analizza i dati per ${ticker} e dai una raccomandazione CHIARA in italiano per un investitore retail principiante.
-
-DOW: Trend=${dow.primaryTrend}, MA20=${dow.ma20}, MA50=${dow.ma50||"N/D"}, Prezzo=${dow.currentPrice} (${dow.priceVsMa20}% vs MA20)
-GANN: Max60gg=${gann.recentHigh}, Min60gg=${gann.recentLow}, Livello vicino=${gann.nearestLevel.label}=${gann.nearestLevel.value}, Angolo1x1=${gann.gann1x1}
-
-Rispondi ESATTAMENTE così:
-
-**🎯 DECISIONE: [COMPRA ORA / ASPETTA / NON COMPRARE]**
-Motivazione in una frase.
-
-**📅 QUANDO COMPRARE**
-Condizione precisa con prezzi numerici.
-
-**💰 PIANO OPERATIVO**
-- Entrata: [prezzo]
-- Stop Loss: [prezzo] — -X%
-- Target 1: [prezzo] — +X%
-- Target 2: [prezzo] — +X%
-- Risk/Reward: 1:X
-
-**⚠️ ATTENZIONE**
-Un rischio concreto.
-
-⚠ Analisi tecnica, non consulenza finanziaria.`;
-
-  const res = await fetch("/api/ai", {
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({ prompt }),
-  });
-  const json = await res.json();
-  return json.text || "Errore nella risposta AI.";
-}
-
-/* ══ MAIN APP ══ */
 function App() {
   const [screen, setScreen] = React.useState("home");
   const [ticker, setTicker] = React.useState("");
@@ -188,17 +171,15 @@ function App() {
   const [gann, setGann] = React.useState(null);
   const [errorMsg, setErrorMsg] = React.useState("");
   const [tab, setTab] = React.useState("chart");
-  const [aiText, setAiText] = React.useState("");
-  const [aiState, setAiState] = React.useState("idle");
   const [showCSV, setShowCSV] = React.useState(false);
-  const [showReport, setShowReport] = React.useState(false);
+  const [copied, setCopied] = React.useState(false);
 
   const PRESETS = ["AAPL","NVDA","MSFT","AMAT","GOOGL","TSLA"];
 
   const commit = React.useCallback((rows, sym) => {
     if (!rows||rows.length<20) { setErrorMsg("Dati insufficienti."); setScreen("error"); return; }
     setData(rows); setDow(analyzeDow(rows)); setGann(analyzeGann(rows));
-    setTicker(sym); setTab("chart"); setAiText(""); setAiState("idle"); setScreen("chart");
+    setTicker(sym); setTab("chart"); setCopied(false); setScreen("chart");
   }, []);
 
   const loadAPI = React.useCallback(async (sym) => {
@@ -212,18 +193,17 @@ function App() {
     catch { setErrorMsg("Errore CSV."); setScreen("error"); }
   }, [csvText, commit]);
 
-  const runAI = React.useCallback(async () => {
+  const copyPrompt = React.useCallback(() => {
     if (!dow||!gann) return;
-    setAiState("loading"); setAiText(""); setTab("ai");
-    try { setAiText(await getAISignal(ticker,dow,gann)); setAiState("done"); }
-    catch { setAiText("Errore. Riprova."); setAiState("done"); }
-  }, [ticker,dow,gann]);
+    const txt = generatePrompt(ticker, dow, gann);
+    navigator.clipboard.writeText(txt).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 4000);
+    });
+  }, [ticker, dow, gann]);
 
   const tc = t => t==="RIALZISTA"?"#00e676":t==="RIBASSISTA"?"#ff1744":"#ffd600";
   const ti = t => t==="RIALZISTA"?"▲":t==="RIBASSISTA"?"▼":"◆";
-  const bold = txt => txt.split(/(\*\*.*?\*\*)/g).map((p,i)=>
-    p.startsWith("**")&&p.endsWith("**")?<strong key={i} style={{color:"#ffd600"}}>{p.slice(2,-2)}</strong>:p
-  );
 
   const S = {
     card: g=>({padding:"14px",background:g?"rgba(255,215,0,0.04)":"rgba(255,255,255,0.03)",border:`1px solid ${g?"rgba(255,215,0,0.14)":"rgba(255,255,255,0.07)"}`,borderRadius:"8px"}),
@@ -235,48 +215,22 @@ function App() {
   return (
     <div style={{minHeight:"100vh",background:"#080d1c",color:"#dde4f0",fontFamily:"'Courier New',monospace"}}>
 
-      {/* REPORT */}
-      {showReport && dow && gann && (
-        <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"#fff",zIndex:1000,overflowY:"auto",padding:"20px"}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"16px",borderBottom:"2px solid #c8a200",paddingBottom:"10px"}}>
-            <div style={{fontFamily:"Georgia,serif",fontWeight:"bold",fontSize:"15px",color:"#1a1a2e"}}>◈ Analisi — {ticker}</div>
-            <button onClick={()=>setShowReport(false)} style={{background:"#1a1a2e",color:"#fff",border:"none",borderRadius:"6px",padding:"6px 14px",cursor:"pointer"}}>✕ Chiudi</button>
-          </div>
-          <div style={{fontFamily:"Georgia,serif",color:"#1a1a2e",fontSize:"13px",lineHeight:"1.8"}}>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"16px"}}>
-              {[{l:"PREZZO",v:`$${gann.currentPrice.toFixed(2)}`},{l:"TREND",v:dow.primaryTrend},{l:"MA20",v:`$${dow.ma20}`},{l:"MAX 60GG",v:`$${gann.recentHigh}`},{l:"MIN 60GG",v:`$${gann.recentLow}`},{l:"GANN",v:`$${gann.nearestLevel.value}`}].map(({l,v})=>(
-                <div key={l} style={{border:"1px solid #ddd",borderRadius:"6px",padding:"8px"}}>
-                  <div style={{fontSize:"9px",color:"#999",marginBottom:"3px"}}>{l}</div>
-                  <div style={{fontWeight:"bold"}}>{v}</div>
-                </div>
-              ))}
-            </div>
-            <div style={{background:"#fffdf0",border:"1px solid #e8d060",borderRadius:"8px",padding:"16px",whiteSpace:"pre-wrap",fontSize:"12px",lineHeight:"1.9",marginBottom:"12px"}}>
-              {aiText.replace(/\*\*/g,"")}
-            </div>
-            <div style={{fontSize:"10px",color:"#aaa",borderTop:"1px solid #eee",paddingTop:"10px"}}>⚠ Analisi tecnica a scopo educativo. Non consulenza finanziaria.</div>
-          </div>
-        </div>
-      )}
-
-      {/* HEADER */}
       <div style={{background:"linear-gradient(90deg,#0c1228,#0f1a30)",borderBottom:"1px solid rgba(255,215,0,0.18)",padding:"12px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:"8px"}}>
         <div>
           <div style={{fontSize:"16px",fontWeight:"bold",color:"#ffd600",letterSpacing:"3px"}}>◈ GANN · DOW ANALYZER</div>
-          <div style={{fontSize:"8px",color:"rgba(255,255,255,0.3)",letterSpacing:"2px"}}>DATI REALI · AI-POWERED</div>
+          <div style={{fontSize:"8px",color:"rgba(255,255,255,0.3)",letterSpacing:"2px"}}>DATI REALI · ALPHA VANTAGE</div>
         </div>
         {screen==="chart" && (
           <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
-            <span style={{fontSize:"11px",color:"#00e676"}}>📡 Alpha Vantage</span>
+            <span style={{fontSize:"11px",color:"#00e676"}}>📡 Live</span>
             <span style={{fontSize:"13px",color:"#ffd600",fontWeight:"bold"}}>{ticker}</span>
-            <button onClick={()=>{setScreen("home");setData(null);setAiText("");}} style={S.btn("ghost")}>⟵</button>
+            <button onClick={()=>{setScreen("home");setData(null);}} style={S.btn("ghost")}>⟵</button>
           </div>
         )}
       </div>
 
       <div style={{padding:"16px",maxWidth:"900px",margin:"0 auto"}}>
 
-        {/* HOME */}
         {screen==="home" && (
           <div style={{maxWidth:"520px",margin:"0 auto"}}>
             <div style={{textAlign:"center",padding:"20px 0 24px"}}>
@@ -315,7 +269,6 @@ function App() {
           </div>
         )}
 
-        {/* LOADING */}
         {screen==="loading" && (
           <div style={{textAlign:"center",padding:"100px 20px"}}>
             <div className="spin" style={{fontSize:"32px",color:"rgba(255,215,0,0.5)",marginBottom:"16px"}}>◈</div>
@@ -323,7 +276,6 @@ function App() {
           </div>
         )}
 
-        {/* ERROR */}
         {screen==="error" && (
           <div style={{maxWidth:"460px",margin:"60px auto",textAlign:"center"}}>
             <div style={{fontSize:"36px",marginBottom:"14px",opacity:0.5}}>⚠</div>
@@ -332,7 +284,6 @@ function App() {
           </div>
         )}
 
-        {/* CHART */}
         {screen==="chart" && data && dow && gann && (
           <>
             <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"14px",flexWrap:"wrap"}}>
@@ -340,7 +291,9 @@ function App() {
               <div style={{padding:"4px 12px",borderRadius:"20px",fontSize:"11px",background:`${tc(dow.primaryTrend)}18`,border:`1px solid ${tc(dow.primaryTrend)}30`,color:tc(dow.primaryTrend)}}>
                 {ti(dow.primaryTrend)} {dow.primaryTrend}
               </div>
-              <button onClick={runAI} style={{...S.btn("gold"),marginLeft:"auto"}}>✦ Analisi AI</button>
+              <button onClick={copyPrompt} style={{...S.btn("gold"),marginLeft:"auto",background:copied?"rgba(0,230,118,0.1)":"rgba(255,215,0,0.1)",borderColor:copied?"rgba(0,230,118,0.4)":"rgba(255,215,0,0.35)",color:copied?"#00e676":"#ffd600"}}>
+                {copied?"✓ Copiato!":"✦ Analisi AI"}
+              </button>
             </div>
 
             <div style={{display:"flex",borderBottom:"1px solid rgba(255,255,255,0.07)",marginBottom:"14px",overflowX:"auto"}}>
@@ -405,28 +358,23 @@ function App() {
             )}
 
             {tab==="ai" && (
-              <div>
-                {aiState==="idle" && <div style={{textAlign:"center",padding:"40px 20px"}}>
-                  <div style={{fontSize:"36px",marginBottom:"12px",opacity:0.35}}>✦</div>
-                  <div style={{color:"rgba(255,255,255,0.4)",fontSize:"12px",marginBottom:"22px"}}>Pronto ad analizzare <strong style={{color:"#ffd600"}}>{ticker}</strong></div>
-                  <button onClick={runAI} style={S.btn("gold")}>✦ AVVIA ANALISI AI</button>
-                </div>}
-                {aiState==="loading" && <div style={{textAlign:"center",padding:"50px 20px",color:"rgba(255,215,0,0.5)"}}>
-                  <div className="spin" style={{fontSize:"24px",marginBottom:"10px"}}>◈</div>
-                  <div style={{fontSize:"11px",letterSpacing:"2px"}}>ANALISI IN CORSO...</div>
-                </div>}
-                {aiState==="done" && aiText && <>
-                  <div style={{padding:"18px",background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,215,0,0.12)",borderRadius:"8px",fontSize:"12px",lineHeight:"1.9",color:"rgba(255,255,255,0.8)",whiteSpace:"pre-wrap"}}>
-                    {bold(aiText)}
+              <div style={{display:"grid",gap:"10px"}}>
+                <div style={S.card(true)}>
+                  <div style={S.lbl}>✦ COME OTTENERE L'ANALISI AI</div>
+                  <div style={{fontSize:"12px",color:"rgba(255,255,255,0.7)",lineHeight:"2",marginBottom:"16px"}}>
+                    <span style={{color:"#ffd600"}}>1.</span> Clicca il pulsante qui sotto<br/>
+                    <span style={{color:"#ffd600"}}>2.</span> Apri <strong>claude.ai</strong> nel browser<br/>
+                    <span style={{color:"#ffd600"}}>3.</span> Incolla il testo e invia<br/>
+                    <span style={{color:"#ffd600"}}>4.</span> Ricevi analisi con entrata, stop loss e target
                   </div>
-                  <div style={{marginTop:"10px",display:"flex",justifyContent:"flex-end",gap:"8px"}}>
-                    <button onClick={runAI} style={{...S.btn("ghost"),fontSize:"10px"}}>⟳ Rigenera</button>
-                    <button onClick={()=>setShowReport(true)} style={{...S.btn("gold"),fontSize:"10px"}}>⬇ Report</button>
-                  </div>
-                  <div style={{marginTop:"10px",padding:"10px 14px",background:"rgba(255,30,30,0.04)",border:"1px solid rgba(255,30,30,0.1)",borderRadius:"6px",fontSize:"9px",color:"rgba(255,255,255,0.28)",lineHeight:"1.6"}}>
-                    ⚠ Analisi tecnica a scopo educativo. Non costituisce consulenza finanziaria.
-                  </div>
-                </>}
+                  <button onClick={copyPrompt}
+                    style={{width:"100%",padding:"12px",borderRadius:"8px",cursor:"pointer",fontSize:"13px",fontFamily:"'Courier New',monospace",letterSpacing:"1px",fontWeight:"bold",background:copied?"rgba(0,230,118,0.12)":"rgba(255,215,0,0.1)",border:`1px solid ${copied?"rgba(0,230,118,0.4)":"rgba(255,215,0,0.35)"}`,color:copied?"#00e676":"#ffd600"}}>
+                    {copied?"✓ COPIATO! Ora incolla su claude.ai":"📋 Copia Prompt per Claude"}
+                  </button>
+                </div>
+                <div style={{padding:"10px 14px",background:"rgba(255,30,30,0.04)",border:"1px solid rgba(255,30,30,0.1)",borderRadius:"6px",fontSize:"9px",color:"rgba(255,255,255,0.28)",lineHeight:"1.6"}}>
+                  ⚠ Analisi tecnica a scopo educativo. Non costituisce consulenza finanziaria.
+                </div>
               </div>
             )}
           </>
